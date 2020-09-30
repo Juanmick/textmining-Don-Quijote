@@ -1,0 +1,610 @@
+---
+title: "Text Mining en Don Quijote de La Mancha"
+author: "by [Juan Manuel Ortiz](https://www.linkedin.com/in/juan-manuel-ortiz-10956a80/)"
+linkedin: "https://www.linkedin.com/in/juan-manuel-ortiz-10956a80/"
+github: "https://github.com/juanmick"
+date: "5/7/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 5
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analisis del libro Don Quijote de La Mancha
+
+Vamos a intentar hacer un análisis del libro, intentando encontrar las palabras más frecuentes, así como las palabras que más relación tienen entre ellas. Usaremos distintos métodos para mostrarlo en forma de tablas o de una manera más gráfica.
+
+### 1. Instalación de paquetes/Carga de librerias
+
+```{r librerias, message=FALSE, warning=FALSE}
+if(!is.element("tidyverse", installed.packages()[, 1]))
+      install.packages("tidyverse", repos = 'http://cran.us.r-project.org')
+library(tidyverse)
+if(!is.element("(gutenbergr", installed.packages()[, 1]))
+      devtools::install_github("ropenscilabs/gutenbergr")
+library(gutenbergr)
+if(!is.element("tidytext", installed.packages()[, 1]))
+      install.packages("tidytext", repos = 'http://cran.us.r-project.org')
+library(tidytext)
+if(!is.element("drlib", installed.packages()[, 1]))
+      devtools::install_github("dgrtwo/drlib") 
+library(drlib)
+if(!is.element("quanteda", installed.packages()[, 1]))
+      install.packages("quanteda", repos = 'http://cran.us.r-project.org')
+library(quanteda)
+if(!is.element("stm", installed.packages()[, 1]))
+      install.packages("stm", repos = 'http://cran.us.r-project.org')
+library(stm)
+library(readr)
+library(tm)
+library(wordcloud)
+library(stats)
+library(udpipe)
+library(lattice)
+library(ggraph)
+library(igraph)
+library(textrank)
+library(wordcloud)
+library(stringi)
+
+```
+
+### 2. Extracción de los datos 
+
+```{r extraccion, warning=FALSE}
+# Extraemos el libro Don Quijote de la Mancha desde el proyecto Gutenberg usando su número de libro, en este caso el 2000
+
+quijote_raw <- gutenberg_download(2000)
+
+# Comprobamos la codificación del libro, en este caso resulta ser ASCII por lo que procedemos a codificarlo a latin1 para que se muestren bien los acentos o caracteres especiales.
+guess_encoding(quijote_raw)
+
+Encoding(quijote_raw$text) <- "latin1"
+guess_encoding(quijote_raw$text)
+
+qraw <- quijote_raw$text
+
+```
+
+### 3. Creación de párrafos
+
+Creamos parrafos agrupando lineas de 10 en 10 para reducir las dimensiones y poderlo tratar mejor y que no le pese tanto a nuestro PC.
+
+```{r parrafos}
+diez <- rep(1:ceiling(length(qraw)/10), each = 10)
+diez <- diez[1:length(qraw)]
+qtext <- cbind(diez, qraw) %>% data.frame()
+qtext <- aggregate(formula = qraw ~ diez,
+                      data = qtext,
+                      FUN = paste,
+                      collapse = " ")
+
+qtext <- qtext %>% select(qraw) %>% as.matrix
+
+dim(qtext)
+
+#Se crea una matriz de dimensión 3746 x 1, lo que nos hará más manejable el texto
+```
+
+
+### 4. Creación de Corpus y primera limpieza
+
+```{r}
+# Vamos a crear un corpus
+
+# Eliminamos caracteres que puedan dar conflictos invalid input in 'utf8towcs'
+usableText = str_replace_all(qtext,"[^[:graph:]]", " ") 
+
+# Quitamos preposiciones
+usableText <- removeWords(usableText, words = c('a', 'ante', 'bajo', 'cabe', 'con', 'contra', 'de', 'desde', 'durante', 'en', 'entre', 'hacia', 'hasta', 'mediante', 'para', 'por', 'según', 'sin', 'so', 'sobre', 'tras', 'vía'))
+
+# Quitamos adverbios
+usableText <- removeWords(usableText, words = c('ayer', 'hoy', 'mañana', 'siempre', 'nunca', 'luego', 'ya', 'ahora', 'frecuentemente', 'antes', 'aquí', 'ahí', 'allí', 'allá', 'acá', 'cerca', 'lejos', 'arriba', 'abajo', 'delante', 'detrás', 'enfrente', 'encima', 'debajo', 'donde', 'así', 'bien', 'mal', 'cuidadosamente', 'mejor', 'peor', 'como', 'mucho', 'poco', 'más', 'menos', 'bastante', 'nada', 'cuanto', 'sí', 'claro', 'bueno', 'obviamente', 'también', 'no', 'tampoco', 'nada', 'apenas', 'jamás', 'nunca', 'quizá', 'probablemente', 'seguramente', 'acaso', 'demás','inclusive','aún'))
+
+# Quitamos acentos
+acentos.text <- function(x){
+  # Quito todos los acento para tener menos dificultades con la nube de palabras
+  # Cambio la ñ porque de problemas en la nube
+  x <- gsub("á", "a", x)
+  x <- gsub("é", "e", x)
+  x <- gsub("í", "i", x)
+  x <- gsub("ó", "o", x)
+  x <- gsub("ú", "u", x)
+  x <- gsub("ñ", "n", x)
+}
+
+# Aplicamos la función
+usableText <- acentos.text(usableText)
+
+# Creamos corpus
+quijote_corpus1 <- Corpus(VectorSource(usableText))
+
+# Miramos los primeros 5 párrafos
+inspect(quijote_corpus1[1:5])
+```
+
+Se aprecia como los párrafos se han creado. Pero todavía es necesaria una limpieza mayor del texto
+
+#### 4.1 Segunda limpieza del texto
+
+```{r}
+
+# Pasar a minúsculas
+corpus_clean <- tm_map(quijote_corpus1, tolower)
+
+# Quitar números
+corpus_clean <- tm_map(corpus_clean, removeNumbers)
+
+# Quitamos signos de puntuacion
+corpus_clean <- tm_map(corpus_clean, removePunctuation)
+
+# Quitamos las stopwords
+corpus_clean <- tm_map(corpus_clean, removeWords, stopwords(kind = 'es'))
+
+# Quitamos espacio en blanco
+corpus_clean <- tm_map(corpus_clean, stripWhitespace)
+
+# Vemos los primeros 10 parrafos
+inspect(corpus_clean[1:10])
+```
+
+### 5. Nube de palabras / Wordcloud
+
+```{r}
+#Nube de palabras
+
+# Nos quedamos con las palabras que aparecen, al menos 200 veces
+wordcloud(corpus_clean, min.freq = 200, random.order = FALSE, colors = brewer.pal(name = "Dark2", n = 8))
+
+```
+
+### 6. Primeros análisis usando DTM / TDM
+
+```{r}
+# Creamos un dtm
+quijote_dtm <- DocumentTermMatrix(corpus_clean)
+
+# Creamos un tdm
+quijote_tdm <- TermDocumentMatrix(corpus_clean)
+
+# Palabras frecuentes
+quijote_mat <- as.matrix(quijote_tdm)
+dim(quijote_mat)
+# Vemos la dimensión de la nueva matriz creada
+
+```
+
+```{r}
+# Usamos2 maneras distintas de mostrar la frecuencia
+# La primera:
+quijote_mat <- quijote_mat %>% rowSums() %>% sort(decreasing = TRUE)
+quijote_mat <- data.frame(palabra = names(quijote_mat), frec = quijote_mat)
+quijote_mat[1:20, ]
+
+```
+
+
+```{r}
+# La segunda, con palabras frecuentes:
+findFreqTerms(quijote_dtm, 500)
+```
+
+
+#### 6.1 Mostramos de manera gráfica los resultados
+
+Primero mostramos las palabras más repetidas
+
+```{r}
+#IMPLEMENTAR GRAFICAS
+
+quijote_mat[1:10, ] %>%
+  ggplot(aes(palabra, frec)) +
+  geom_bar(stat = "identity", color = "black", fill = "#87CEFA") +
+  geom_text(aes(hjust = 1.3, label = frec)) + 
+  coord_flip() + 
+  labs(title = "Diez palabras más frecuentes en Don Quijote",  x = "Palabras", y = "Número de usos")
+
+```
+
+Segundo mostramos la proporción de uso de esas 10 palabras en todo nuestro documento
+
+```{r}
+quijote_mat %>%
+  mutate(perc = (frec/sum(frec))*100) %>%
+  .[1:10, ] %>%
+  ggplot(aes(palabra, perc)) +
+  geom_bar(stat = "identity", color = "black", fill = "#87CEFA") +
+  geom_text(aes(hjust = 1.3, label = round(perc, 2))) + 
+  coord_flip() +
+  labs(title = "Diez palabras más frecuentes en Don Quijote", x = "Palabras", y = "Porcentaje de uso")
+```
+
+#### 6.2 Asociaciones entre las 4 palabras más usadas
+
+Vemos las asociaciones de las 4 palabras más usadas y las palabras con las que más relación tienen.
+En este caso vemos que no hay palabras con suficiente relación para "dijo", para conseguirlo, deberiamos modificar el valor de corlimit.
+
+
+```{r}
+findAssocs(quijote_tdm, terms = c("don", "quijote", "sancho", "dijo"), corlimit = .20)
+```
+
+#### 6.3 Eliminar terminos dispersos
+
+Con esta función limpiaremos nuestro documento de palabras que tienen poca frecuencia, podemos modificar el nivel de filtro, considerando 1 como si mantuviesemos todas las palabras
+
+```{r}
+quijote_new <- removeSparseTerms(quijote_tdm, sparse = .93)
+
+quijote_tdm
+
+quijote_new
+
+#Nos quedamos con 49 terminos de 22989
+```
+
+### 7. Agrupamiento jerárquico con Hclust
+
+
+```{r}
+# Agrupamiento jerarquico
+
+# Creamos una matriz de distancia para comenzar a agrupar
+quijote_new <- quijote_new %>% as.matrix()
+
+# Estandarizamos con la media por fila
+quijote_new <- quijote_new / rowSums(quijote_new)
+
+# Obtenemos matriz de distancia mediante el metodo Euclidian
+quijote_dist <- dist(quijote_new, method = "euclidian")
+
+# Usamos la función hclust de agrupamiento jerárquico 
+quijote_hclust <-  hclust(quijote_dist, method = "ward.D")
+
+plot(quijote_hclust, main = "Dendrograma del Quijote - hclust", sub = "", xlab = "", cex=0.7)
+
+rect.hclust(quijote_hclust, k = 5, border="red")
+```
+
+El dendograma anterior nos muestra unas interesantes agrupaciones de palabras que normalmente se encuentran juntas unas con otras.
+
+
+### 8. Natural Language Processing
+
+```{r message=FALSE, warning=FALSE}
+#TARDA COMO 20'
+
+text <- as.character(corpus_clean)
+
+# Comenzamos con el análisis
+#text <- as.character(qtext)
+
+
+
+# Descargamos el modelo udpipe en español
+ud_model <- udpipe_download_model(language = "spanish")
+
+# Y lo cargamos en la dirección de descarga (ud_model$file_model)
+ud_model <- udpipe_load_model(ud_model$file_model)
+
+# Creamos la anotación del Quijote con el modelo upepipe
+data_udpipe_anotado <- udpipe_annotate(ud_model,  
+                                       # Tokenizamos el texto del Quijote
+                                       x      = text)
+
+# Lo convertimos a data.frame
+data_udpipe_anotado <- as.data.frame(data_udpipe_anotado)
+
+data_udpipe_anotado <- data_udpipe_anotado[data_udpipe_anotado$upos != 'PUNCT', ]
+
+
+```
+
+#### 8.1 UPOS (Universal Part Of Speech)
+
+```{r}
+
+# Tabla de UPOS ordenada en orden creciente. 
+
+table(data_udpipe_anotado$upos)[order(table(data_udpipe_anotado$upos))]
+```
+
+Los nombres, verbos y adjetivos son las palabras más utilizadas en ese orden.La tabla no muestra completamente la realidad, ya que hemos realizado una limpieza anterior del texto eliminando los adverbios y preposiciones más comunes. 
+
+Mostramos en gráfico la tabla anterior.
+
+
+```{r}
+
+#ESTADISTICAS BASICAS DE FRECUENCIA
+
+## UPOS
+
+# Creamos un data.frame con la función txt_freq que crea una tabla a partir de x,
+# en este primer caso los valores de upos, con la frecuencia
+stats_upos     <- txt_freq(data_udpipe_anotado$upos)
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_upos$key <- factor(stats_upos$key, levels = rev(stats_upos$key))
+
+# Pasamos los datos al gráfico
+barchart(key ~ freq, data = stats_upos, col = "yellow", 
+         main = "UPOS (Universal Parts of Speech)\n por frecuencia de aparición", 
+         xlab = "Frecuencia")
+```
+
+
+#### 8.2 Nombres más frecuentes
+
+```{r}
+## Nombres
+
+# En este caso, primero vamos a crear un objeto, stats_nombres, con los valores
+# NOUN en data_udpipe_anotado
+stats_nombres     <- subset(data_udpipe_anotado, upos %in% c("NOUN")) 
+
+# Y ahora, con txt_freq, sacamos la frecuencia de cada nombre
+stats_nombres     <- txt_freq(stats_nombres$token)
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_nombres$key <- factor(stats_nombres$key, levels = rev(stats_nombres$key))
+
+# El gráfico
+barchart(key ~ freq, data = head(stats_nombres, 20), col = "blue", 
+         main = "Nombres más comunes", xlab = "Frecuencia")
+```
+
+Podemos apreciar que los nombres más frecuentes son merced, quijote, sancho, caballero. El segundo en este caso es respondió, que es un verbo, quizá está mal clasificado por haber anulado los acentos de las palabras.
+
+#### 8.3 Adjetivos más comunes
+
+```{r}
+## Adjetivos
+
+# Como el caso anterior, primero obtenemos los adjetivos
+stats_adjetivos     <- subset(data_udpipe_anotado, upos %in% c("ADJ")) 
+
+# Y ahora, con txt_freq, sacamos la frecuencia de cada nombre
+stats_adjetivos     <- txt_freq(stats_adjetivos$token)
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_adjetivos$key <- factor(stats_adjetivos$key, levels = rev(stats_adjetivos$key))
+
+# El gráfico
+barchart(key ~ freq, data = head(stats_adjetivos, 20), col = "gold", 
+         main = "Adjetivos más comunes", xlab = "Frecuencia")
+```
+
+#### 8.4 verbos más frecuentes
+
+
+```{r}
+# Verbos
+
+# Como el caso anterior, primero obtenemos los verbos
+stats_verbos     <- subset(data_udpipe_anotado, upos %in% c("VERB")) 
+
+# Y ahora, con txt_freq, sacamos la frecuencia de cada nombre
+stats_verbos     <- txt_freq(stats_verbos$token)
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_verbos$key <- factor(stats_verbos$key, levels = rev(stats_verbos$key))
+
+# El gráfico
+barchart(key ~ freq, data = head(stats_verbos, 20), col = "purple", 
+         main = "Verbos más comunes", xlab = "Frecuencia")
+```
+
+Los verbos nos pueden dar una idea del tipo de acción que contiene el texto, en este caso dá a entender que se cuenta una historia debido a los tiempos verbales usados y las referencias al verbo decir.
+
+
+### 9. RAKE (Rapid Automatic Keyword Extraction algorithm) 
+
+Utilizaremos ahora el algoritmo RAKE para extraer las palabras clave y hacer una asociación entre ellas.
+
+```{r}
+## Usando RAKE
+
+stats_rake     <- keywords_rake(x        = data_udpipe_anotado, 
+                                # la columna con textos a buscar, lemma
+                                term     = "lemma", 
+                                # el id
+                                group    = "doc_id", 
+                                relevant = data_udpipe_anotado$upos %in% c("NOUN", "ADJ"))
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_rake$key <- factor(stats_rake$keyword, levels = rev(stats_rake$keyword))
+
+# El gráfico
+barchart(key ~ rake, data = head(subset(stats_rake, freq > 3), 20), col = rainbow(20), 
+         main = "Keywords identificadas con RAKE", 
+         xlab = "Rake")
+```
+
+El algoritmo nos deja muestras que las palabras más repetidas son algunos de los personajes, con algunos de sus adjetivos. Como Don Quijote, blanco luna, Don Antonio.
+
+### 10. COLLOCATION 
+
+Palabras seguidas unas de otras
+
+```{r}
+# Usando Collocation con Pointwise Mutual Information (PMI)
+
+# Y ahora con la función keywords_collocation buscamos las keywords. Primero le
+# pasamos el data.frame, data_udpipe_anotado
+stats_keywords_collocation     <- keywords_collocation(x     = data_udpipe_anotado,
+                                                       term  = "token", 
+                                                       group = "doc_id")
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_keywords_collocation$key <- factor(stats_keywords_collocation$keyword, 
+                                         levels = rev(stats_keywords_collocation$keyword))
+
+# El gráfico con una frecuencia mayor de 4, los 20 primeros
+barchart(key ~ pmi, data = head(subset(stats_keywords_collocation, freq > 4), 20), 
+         col  = "green", 
+         main = "Keywords identificadas con PMI Collocation", 
+         xlab = "PMI (Pointwise Mutual Information)")
+```
+
+Vemos que las combinaciones más repetidas suelen ser el nombre de un protagonista y su apellido.
+
+### 11. CO-OCCURRENCES: 
+
+
+```{r message=FALSE, warning=FALSE}
+# Nos quedamos sólo con los nombres y los adjetivos
+data_udpipe_anotado_noun_adj             <- subset(data_udpipe_anotado, upos %in% c("NOUN", "ADJ"))
+
+# Pasamos el id a número
+data_udpipe_anotado_noun_adj$doc_id      <- as.integer(data_udpipe_anotado_noun_adj$doc_id)
+
+# Primero pasamos el data.frame, data_udpipe_anotado_noun_adj
+cooc <- cooccurrence(data_udpipe_anotado_noun_adj, 
+                     
+                     # Buscamos en la columna lemma
+                     term  = "lemma", 
+                     
+                     # Los id de las columnas sobre las que se buscarán las 
+                     # coincidencias
+                     group = c("doc_id", "paragraph_id", "sentence_id"))
+
+# Como están ordenadas, nos quedamos con las 30 primeras
+wordnetwork <- head(cooc, 30)
+
+# Creamos el gráfico con la función graph_from_data_frame
+wordnetwork <- graph_from_data_frame(wordnetwork)
+
+# El gráfico
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "pink") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  theme(legend.position = "none") +
+  labs(title = "Cooccurrences en la misma frase", subtitle = "Entre nombres y adjetivos")
+```
+
+Se aprecia como Don Quijote, Don Sancho, Sancho Caballero, o don señor son algunas de las combinaciones que más ocurren en la misma frase.
+
+```{r warning=FALSE}
+# Nombres y adjetivos que siguen uno a otro
+# En este caso incluimos el valor relevant para quedarnos con nombres y adjetivos
+cooc2 <- cooccurrence(data_udpipe_anotado$lemma, 
+                      relevant = data_udpipe_anotado$upos %in% c("NOUN", "ADJ"), 
+                      skipgram = 1)
+
+# Nos quedamos con las 15 primeras
+wordnetwork <- head(cooc2, 15)
+
+# Generamos los datos para el gráfico
+wordnetwork <- graph_from_data_frame(wordnetwork)
+
+# El gráfico
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc),edge_colour = "red") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Palabras seguidas una de otra", subtitle = "Nombres y adjetivos")
+```
+
+Destacan como palabras seguidas unas de otras, por un lado "Don Quijote", y por otro "andante caballero"
+
+```{r message=FALSE, warning=FALSE}
+# Nombres y adjetivos frecuencia aún saltando 2 palabras
+# En este caso incluimos el valor relevant para quedarnos con nombres y adjetivos
+cooc3 <- cooccurrence(data_udpipe_anotado$lemma, 
+                      relevant = data_udpipe_anotado$upos %in% c("NOUN", "ADJ"), 
+                      skipgram = 3)
+
+# Nos quedamos con las 15 primeras
+wordnetwork <- head(cooc3, 15)
+
+# Generamos los datos para el gráfico
+wordnetwork <- graph_from_data_frame(wordnetwork)
+
+# El gráfico
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc),edge_colour = "red") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Coocurrences con 3 palabras de distancia", subtitle = "Nombres y adjetivos")
+```
+
+En este caso hemos probado con un salto de 3 palabras y aún asi siguen siendo estas las palabras, más seguidas unas de otras,  igual que el analisis anterior.
+
+
+### 12. PHRASES: 
+
+Secuencia de Parts Of Speech Tags
+
+```{r}
+## Detección de secuencias de partes del texto dentro de la frase con POS tags (nombres y verbos)
+
+# Creamos una columna nueva, phrase_tag, con la función as_phrasemachine
+# Básicamente revisa todos del POS y los reagrupa asignando una letra:
+# A: adjective
+# C: coordinating conjuction
+# D: determiner
+# M: modifier of verb
+# N: noun or proper noun
+# P: preposition
+# O: other elements
+data_udpipe_anotado$phrase_tag <- as_phrasemachine(data_udpipe_anotado$upos, 
+                                                   type = "upos")
+
+# Ahora la función keywords_phrases obtiene frases en vez de combinaciones de 
+# dos palabras
+stats_keywords_frases <- keywords_phrases(x        = data_udpipe_anotado$phrase_tag, 
+                                          
+                                          # El término a buscar, token en minúsculas
+                                          term     = tolower(data_udpipe_anotado$token), 
+                                          
+                                          # Patrón de búsqueda con expresiones 
+                                          # regulares
+                                          pattern  = "(A|N)+N(P+D*(A|N)*N)*",                           
+                                          
+                                          # Hay que poner en TRUE si pattern 
+                                          # es una expresión regular
+                                          is_regex = TRUE,
+                                          
+                                          
+                                          # detailed = FALSE cuenta el número de
+                                          # veces que aparece la frase
+                                          detailed = FALSE)
+stats_keywords_frases <- subset(stats_keywords_frases, ngram > 3 & freq > 3)
+
+# Convertimos key en factor, ordenados de forma inversa
+stats_keywords_frases$key <- factor(stats_keywords_frases$keyword, 
+                                    levels = rev(stats_keywords_frases$keyword))
+
+# El gráfico
+barchart(key ~ freq, data = head(stats_keywords_frases, 20), col = rainbow(20), 
+         main = "Keywords - Frases simples de 4 palabras", xlab = "Frecuencia")
+```
+
+
+
+### 13. Red de palabras Text Rank 
+
+Red de palabras ordenadas con el algoritmo de Google.
+Muestra las palabras relevantes, que junto con otras relevantes, se combinan obteniendo palabras clave. 
+
+```{r warning=FALSE}
+
+palabras_textrank <- textrank_keywords(data_udpipe_anotado$lemma, 
+                          relevant = data_udpipe_anotado$upos %in% c("NOUN", "ADJ"), 
+                          ngram_max = 8, sep = " ")
+palabras_textrank <- subset(palabras_textrank$keywords, ngram > 1 & freq >= 10)
+
+# library(wordcloud)
+wordcloud(words = palabras_textrank$keyword, freq = palabras_textrank$freq,
+          random.order = FALSE, colors = brewer.pal(name = "Dark2", n = 8))
+```
+
